@@ -1,0 +1,57 @@
+占位式（插桩式）插件化缺点：在插件中必须使用宿主的的环境，太依赖与宿主
+
+hook式插件化缺点：插件越多，dexElements会越来越大，内存也会随之增大
+
+LoadAPK式：控制ClassLoader
+PathClassLoader ---> 加载宿主的class
+自定义的ClassLoader --> 加载插件的class
+
+
+ActivityThread源码分析：
+startActivity() -->  Activity.startActivity() --> Activity.startActivityForResult() --> Instrumentation.execStartActivity() --> ActivityTaskManager.getService().startActivity(AMS检查)
+ActivityThread.handleLaunchActivity()(自己去处理LoadedApk中的ClassLoader)
+
+
+拿的是宿主的 LoadedApk
+key --> 包名  value --> LoadedApk
+public final LoadedApk getPackageInfoNoCheck(ApplicationInfo ai, CompatibilityInfo compatInfo)
+
+缓存中的
+@UnsupportedAppUsage
+final ArrayMap<String, WeakReference<LoadedApk>> mPackages = new ArrayMap<>(); 默认保存的是宿主的 LoadedApk
+
+LoadedApk --->  宿主的  --->  LoadedApk.mClassLoader  --->  加载宿主中的class
+
+自定义一个 LoadedApk 然后保存到 mPackages 中
+
+自定义的 LoadedApk --->  插件的  --->  自定义的 LoadedApk.mClassLoader ---> 加载插件中的class
+
+
+在 performLaunchActivity()里面的  java.lang.ClassLoader cl = appContext.getClassLoader();正是 LoadedApk.mClassLoader
+activity = mInstrumentation.newActivity()
+return (Activity) cl.loadClass(className).newInstance();
+
+结论：宿主中的 LoadedApk.mClassLoader 加载宿主中的class，然后实例化
+
+所以我们要自定义 LoadedApk 自定义一个 mClassLoader，用于加载插件里面的class然后实例化
+
+
+//系统是如何创建 LoadedApk 对象的
+  @Override
+    @UnsupportedAppUsage
+    public final LoadedApk getPackageInfoNoCheck(ApplicationInfo ai,
+            CompatibilityInfo compatInfo) {
+        return getPackageInfo(ai, compatInfo, null, false, true, false);
+    }
+
+先去从 mPackages 里面拿，如果这里面没有，就新建一个，然后再放到 mPackages里面。
+
+
+绕过 PMS 的检测处理
+
+流程：startActivity --> Activity  --> Instrumentation --> AMS 检查 --> ActivityThread --> 获取自定义的 LoadedApk.ClassLoader
+--> 实例化 Activity --> initializeJavaContextClassLoader (PMS检查要启动的包名是否安装) --> 处理生命周期方法(真正的启动插件里面的 Activity)
+
+PMS检查：pi = pm.getPackageInfo(mPackageName, PackageManager.MATCH_DEBUG_TRIAGED_MISSING, UserHandle.myUserId());
+
+Hook 我们要在 getPackageInfo() 执行之前给 hook 拦截住，控制 pi 不为 null
